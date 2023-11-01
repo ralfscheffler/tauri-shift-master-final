@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>
+      PHP Shift Planning (JavaScript/HTML5 Frontend, MySQL Database)
+    </title>
+    <link href="index.css" rel="stylesheet" type="text/css" />
+
+    <!-- DayPilot library -->
+    <script src="js/daypilot/daypilot-all.js"></script>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <script src="js/daypilot/ralleManipulate.js"></script>
+  </head>
+  <body>
+    <div class="header">
+      <h1><a href="#">Schichtplanner</a></h1>
+      <div><a href="#">Batschkapp, Nachtleben, Kulturzentrum</a></div>
+    </div>
+
+    <div class="main">
+      <div class="space">
+        Location:
+        <select id="locations"></select>
+        &nbsp;&nbsp;&nbsp;
+        <button id="nextMonth" onclick="goMonth(1);">Monat +</button>
+        &nbsp;
+        <button id="prevMonth" onclick="goMonth(0);">Monat -</button>
+      </div>
+
+      <div id="dp"></div>
+    </div>
+
+    <script>
+      const { readTextFile, BaseDirectory } = window.__TAURI__.fs;
+
+      var dDaypilotMonthToDisplay = DayPilot.Date.today();
+
+      var locations = {
+        list: [],
+        find: function (id) {
+          if (!locations.list) {
+            return null;
+          }
+          return locations.list.find(function (item) {
+            return item.id === id;
+          });
+        },
+        activate: async function (location) {
+          var item = location;
+          if (typeof location !== "object") {
+            item = locations.find(location);
+          }
+          dp.events.list = [];
+
+          var Url =
+            sServerPath +
+            `/shift/plandatawithlocation/${item.id}/?&start=${dp
+              .visibleStart()
+              .toString()}&end=${dp.visibleEnd().toString()}`;
+
+          const rData = await axios.get(sServerPath + "/users/getallusers");
+          console.log(rData)
+          data = manipulatePeople(rData.data);
+          data.splice(0, 0, {
+            id: "L" + item.id,
+            name: item.name,
+            type: "location",
+          });
+          dp.update({ resources: data });
+
+          const eData = await axios.get(Url);
+
+          data = manipulateAssignments(eData.data);
+          console.log(data);
+          dp.update({ events: data });
+        },
+        load: async function () {
+          sServerPath = await getServerUrl(); //getServerPath();
+          const data = await axios.get(sServerPath + "/api/locations");
+          //console.log(data);
+          
+          console.log("server:", sServerPath);
+          var tempJSON = data.data;
+          locations.list = [];
+
+          tempJSON.forEach(function (arrItem) {
+            locations.list.push({
+              id: arrItem.id.toString(),
+              name: arrItem.name,
+            });
+          });
+
+          var select = $("#locations");
+          select.innerHTML = "";
+
+          locations.list.forEach(function (item) {
+            select.append(
+              $("<option></option>").attr("value", item.id).text(item.name)
+            );
+          });
+
+          locations.activate(locations.list[0]);
+        },
+      };
+
+      var dp = new DayPilot.Scheduler("dp", {
+        locale: "de-de",
+        timeHeaders: [
+          { groupBy: "Day", format: "dddd, d MMMM yyyy" },
+          { groupBy: "Hour" },
+          { groupBy: "Cell", format: "mm" },
+        ],
+        scale: "CellDuration",
+        days: DayPilot.Date.today().daysInMonth(),
+        startDate: DayPilot.Date.today().firstDayOfMonth(),
+        timeRangeSelectedHandling: "Enabled",
+
+        cellWidthSpec: "Fixed",
+        cellWidth: 20,
+        crosshairType: "Header",
+
+        cellDuration: 30,
+        businessBeginsHour: 10,
+        businessEndsHour: 4,
+        showNonBusiness: true,
+        businessWeekends: false,
+        floatingEvents: true,
+
+        eventHeight: 30,
+        headerHeight: 30,
+        treeEnabled: true,
+        allowEventOverlap: true,
+        multiMoveVerticalMode: "Master",
+        eventResizeHandling: "Update",
+        eventMoveHandling: "Update",
+        rowHeaderColumns: [
+          { name: "Name", display: "name" },
+          { name: "Total" },
+        ],
+
+        onEventResized: async function (args) {
+          var e = args.e;
+          this.message("Event resized: " + args.e.text());
+
+          const res = await axios.patch(
+            sServerPath + `/shift/updateplan/${e.data.id}`,
+            { start: args.newStart, end: args.newEnd }
+          );
+          console.log(res)
+          if (res.statusText == "OK") {
+            dp.message(res.data.message);
+            // dp.message(res.data.message);
+            // dp.message(res.data.message);
+          }
+        },
+
+        onTimeRangeSelected: async function (args) {
+          var dp = this;
+
+          var row = dp.rows.find(args.resource);
+          if (row.index === 0) {
+            DayPilot.Modal.alert(
+              "No assignment for this shift.<br><br>Click below to create a new assignment."
+            ).then(function (modal) {
+              dp.clearSelection();
+            });
+            return;
+          }
+          console.log(args.start, args.end);
+
+          dp.clearSelection();
+
+          var locationId = $("#locations").val();
+          var iddata = parseInt(args.resource);
+
+          const res = await axios.post(sServerPath + "/shift/plandatanew", {
+            starttime: new Date(args.start),
+            endtime: new Date(args.end),
+            location_id: parseInt(locationId),
+            stamm_id: iddata,
+          });
+
+          // if (res.status == 200) {
+          if (res.statusText =="OK") {
+            console.log(res.data)
+            var data = res//res.data;
+            var id = res.id//data.id;
+
+            dp.events.add(
+              new DayPilot.Event({
+                start: args.start,
+                end: args.end,
+                id: id,
+                resource: args.resource,
+                location: locationId,
+                person: args.resource,
+                join: id,
+              })
+            );
+
+            dp.events.add(
+              new DayPilot.Event({
+                start: args.start,
+                end: args.end,
+                id: "L" + id,
+                resource: "L" + locationId,
+                location: locationId,
+                person: args.resource,
+                type: "location",
+                join: id,
+              })
+            );
+          }
+        },
+        onBeforeCellRender: function (args) {
+          if (args.cell.y === 0) {
+            args.cell.backColor = "#e0b4a8";
+          }
+        },
+        onBeforeRowHeaderRender: function (args) {
+          var duration = args.row.events.totalDuration();
+          var columnTotal = args.row.columns[1];
+          if (duration.totalHours() > 0 && columnTotal) {
+            columnTotal.html = duration.totalHours() + "h";
+          }
+          if (args.row.data.type === "location") {
+            args.row.backColor = "#e06146";
+            args.row.fontColor = "blue"; //"#fff";
+            if (columnTotal) {
+              columnTotal.fontColor = "#fff";
+            }
+          } else {
+            args.row.backColor = args.row.data.color ? args.row.data.color : ""; // hier wird der Name eingefärbt.
+            args.row.fontColor =
+              args.row.data.color == "#201e1e" ||
+              args.row.data.color == "#365b25" ||
+              args.row.data.color == "#6e6868"
+                ? "white"
+                : "black";
+          }
+        },
+        onEventMove: async function (args) {
+          var e = args.e;
+          //dp.message("External drop forbidden");
+
+          if (e.data.type === "location") {
+            console.log(e.data.join)
+            const res = await axios.patch(
+              sServerPath + `/shift/updateplan/${e.data.join}`,
+              { start: args.newStart, end: args.newEnd }
+            );
+            console.log('oneventmove:', res)
+            if (res.statusText === "OK") {
+              dp.message(res.data.message);
+            }
+          } else {
+            const res = await axios.patch(
+              sServerPath + `/shift/updatePlanLocation/${e.data.join}`,
+              { id: args.newResource }
+            );
+            console.log(res);
+            //if (res.statusText === "OK") {
+            if (res.statusText=="OK") {
+              const locationAssignment = dp.events.find("L" + e.data.join);
+              const personAssignment = dp.events.find(parseInt(e.data.join));
+              locationAssignment.data.person = args.newResource;
+              personAssignment.data.person = args.newResource;
+              personAssignment.data.resource = args.newResource;
+              dp.events.update(locationAssignment);
+              dp.events.update(personAssignment);
+
+              //console.log("person:", personAssignment);
+            }
+          }
+        },
+        onTimeRangeSelecting: function (args) {
+          if (args.duration.totalHours() > 8) {
+            args.allowed = false;
+            args.right.enabled = true;
+            args.right.html = "Schichtlänge max. 8 Stunden";
+          }
+        },
+        onBeforeEventRender: function (args) {
+          var isLocation = args.data.type === "location";
+          var inactive = args.data.type === "inactive";
+
+          if (isLocation) {
+            var person = dp.rows.find(args.data.person);
+
+            args.data.backColor = "#bfd9a9";
+            args.data.borderColor = "#7aa35d";
+            args.data.barHidden = true;
+            args.data.html = person?.name;
+            args.data.moveVDisabled = true;
+
+            args.data.areas = [
+              {
+                right: 2,
+                top: 2,
+                height: 21,
+                width: 21,
+                cssClass: "scheduler_default_event_delete",
+                style:
+                  "background-color: #fff; border: 1px solid #ccc; box-sizing: border-box; border-radius: 10px; padding: 0px;",
+                visibility: "Visible",
+                onClick: function (args) {
+                  DayPilot.Modal.confirm("Schicht löschen?").then(
+                    async function (margs) {
+                      if (!margs.result) {
+                        return;
+                      }
+                      var locationAssignment = args.source;
+                      var assignmentId = locationAssignment.data.join;
+                      var personAssignment = dp.events.find(parseInt(assignmentId));
+
+                      const res = await axios.delete(
+                        sServerPath + "/shift/plandelete/" + assignmentId
+                      );
+                      console.log(res)
+                      if (res.statusText="OK") {
+                        dp.events.remove(locationAssignment);
+                        dp.events.remove(personAssignment);
+                      }
+                    }
+                  );
+                },
+              },
+            ];
+          } else {
+            var location = locations.find(args.data.location);
+            var person = dp.rows.find(args.data.person);
+            if (location) {
+              args.data.html = location.name;
+              args.data.moveHDisabled = true;
+              args.data.backColor = person ? person.data.color : "#bfd9a9";
+            }
+            if (inactive) {
+              args.data.backColor = "#eee";
+              args.data.fontColor = "#666";
+              args.data.barHidden = true;
+              args.data.moveDisabled = true;
+              args.data.resizeDisabled = true;
+            } else {
+              args.data.backColor = person?.data?.color || "#bfd9a9";
+
+              args.data.borderColor = "#7aa35d";
+              args.data.barHidden = true;
+              args.data.bubbleHtml = person?.name;
+              //dp.update(args);
+            }
+          }
+        },
+      });
+      dp.init();
+
+      function goMonth(nAction) {
+        if (nAction == 0) dp.startDate = dp.startDate.addMonths(-1);
+        else if (nAction == 1) dp.startDate = dp.startDate.addMonths(1);
+
+        dp.update(dp.startDate);
+        dp.days = dp.startDate.daysInMonth(); //Anzahl der Tage im ausgewählten Monat
+        dp.update(dp.days);
+
+        locations.activate($("#locations").val());
+      }
+      async function getServerUrl() {
+        console.log(readTextFile);
+        const path = await readTextFile("inifiles/test.ini", {
+          dir: BaseDirectory.Document,
+          recursive: true,
+        });
+        return path;
+      }
+      // async function getServerPath() {
+      //   return await jQuery.get(
+      //     "../inifiles/app.ini",
+      //     async function (fileContent) {
+      //       console.log(fileContent);
+      //       sServerPath = fileContent;
+      //       return await fileContent;
+      //       console.log("get:", sServerPath);
+      //     }
+      //   );
+      // }
+    </script>
+
+    <script>
+      let sServerPath;
+      $(document).ready(function () {
+        $("#locations").change(function (ev) {
+          var id = $(this).val();
+          locations.activate(id);
+        });
+
+        locations.load();
+      });
+    </script>
+  </body>
+</html>
